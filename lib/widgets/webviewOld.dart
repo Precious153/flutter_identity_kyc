@@ -1,10 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
-class IdentityKYCWebView extends StatelessWidget {
+class IdentityKYCWebView extends StatefulWidget {
   final String merchantKey;
   final String email;
   final String? firstName;
@@ -28,11 +29,177 @@ class IdentityKYCWebView extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    InAppWebViewController _webViewController;
-    final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  _IdentityKYCWebViewState createState() => _IdentityKYCWebViewState();
+}
 
-    return new WillPopScope(
+class _IdentityKYCWebViewState extends State<IdentityKYCWebView> {
+  late WebViewController _webViewController;
+  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+  @override
+  void initState() {
+    super.initState();
+
+    // // Enable platform-specific features
+    // if (Platform.isAndroid) {
+    //   WebView.platform = AndroidWebView();
+    // }
+
+    _initializeWebViewController();
+  }
+
+  void _initializeWebViewController() {
+    _webViewController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0x00000000))
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageStarted: (String url) {
+            print('Page started loading: $url');
+          },
+          onPageFinished: (String url) {
+            print('Page finished loading: $url');
+            _injectJavaScript();
+          },
+          onWebResourceError: (WebResourceError error) {
+            print('Web resource error: ${error.description}');
+          },
+        ),
+      )
+      ..addJavaScriptChannel(
+        'FlutterInAppWebView',
+        onMessageReceived: (JavaScriptMessage message) {
+          _handleJavaScriptMessage(message.message);
+        },
+      )
+      ..loadRequest(Uri.parse(
+        "https://dev.d1gc80n5odr0sp.amplifyapp.com/39a5c5cc-eaa5-4577-9093-3c2acfa1807f",
+      ));
+  }
+
+  void _handleJavaScriptMessage(String messageData) {
+    try {
+      // Handle the message similar to the original code
+      if (messageData.isNotEmpty) {
+        Map response = json.decode(messageData);
+        if (response.containsKey("event")) {
+          switch (response["event"]) {
+            case "closed":
+              widget.onCancel({"status": "closed"});
+              break;
+            case "error":
+              widget.onError({
+                "status": "error",
+                "message": response['message'],
+              });
+              break;
+            case "verified":
+              widget.onVerified({
+                "status": "success",
+                "data": response,
+              });
+              break;
+            default:
+              break;
+          }
+        }
+      } else {
+        print("Received empty data from JavaScript handler");
+      }
+    } catch (e) {
+      print("Error decoding JSON from WebView: $e");
+      print("Raw data from WebView: $messageData");
+      widget.onError({
+        "status": "error",
+        "message": "Failed to process message from WebView: $e",
+      });
+    }
+  }
+
+  void _injectJavaScript() {
+    final String jsCode = '''
+      (function() {
+        console.log('Injecting JavaScript for KYC WebView');
+        
+        // Set up message listener for postMessage communication
+        window.addEventListener("message", function(event) {
+          console.log('WEB CONSOLE: Received message event');
+          console.log('WEB CONSOLE: Event data:', event.data);
+          
+          try {
+            // Send the event data to Flutter
+            if (typeof event.data === 'object' && event.data !== null) {
+              FlutterInAppWebView.postMessage(JSON.stringify(event.data));
+            } else if (typeof event.data === 'string') {
+              // Try to parse and re-stringify to ensure valid JSON
+              var parsedData = JSON.parse(event.data);
+              FlutterInAppWebView.postMessage(JSON.stringify(parsedData));
+            }
+          } catch (e) {
+            console.error('WEB CONSOLE: Error processing message:', e);
+            FlutterInAppWebView.postMessage(JSON.stringify({
+              event: 'error',
+              message: 'Error processing message: ' + e.message
+            }));
+          }
+        }, false);
+
+        // Test camera and microphone access
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+          .then(function(stream) {
+            console.log('WEB CONSOLE: Camera and microphone access granted to web content!');
+            // Clean up the test stream
+            stream.getTracks().forEach(track => track.stop());
+          })
+          .catch(function(err) {
+            console.error('WEB CONSOLE: Error accessing camera/microphone in web content: ' + err.name + ': ' + err.message);
+            FlutterInAppWebView.postMessage(JSON.stringify({
+              event: 'error',
+              message: 'Camera/microphone access denied: ' + err.message
+            }));
+          });
+
+        // Override console methods to capture logs
+        const originalLog = console.log;
+        console.log = function(...args) {
+          originalLog.apply(console, args);
+          // Send log to Flutter for debugging
+          try {
+            FlutterInAppWebView.postMessage(JSON.stringify({
+              event: 'log',
+              message: 'WEB CONSOLE: ' + args.join(' ')
+            }));
+          } catch (e) {
+            // Ignore errors when sending logs
+          }
+        };
+
+        const originalError = console.error;
+        console.error = function(...args) {
+          originalError.apply(console, args);
+          // Send error to Flutter
+          try {
+            FlutterInAppWebView.postMessage(JSON.stringify({
+              event: 'error',
+              message: 'WEB CONSOLE ERROR: ' + args.join(' ')
+            }));
+          } catch (e) {
+            // Ignore errors when sending logs
+          }
+        };
+
+        console.log('WEB CONSOLE: JavaScript injection completed');
+      })();
+    ''';
+
+    _webViewController.runJavaScript(jsCode).catchError((error) {
+      print('Error injecting JavaScript: $error');
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
       onWillPop: () async => false,
       child: Material(
         type: MaterialType.transparency,
@@ -41,132 +208,8 @@ class IdentityKYCWebView extends StatelessWidget {
             key: navigatorKey,
             onGenerateRoute: (settings) {
               return MaterialPageRoute(
-                builder: (context) => InAppWebView(
-                  onPermissionRequest: (controller, request) async {
-                    try {
-                      return PermissionResponse(
-                          action: PermissionResponseAction.GRANT,
-                          resources: [
-                            PermissionResourceType.CAMERA_AND_MICROPHONE,
-                          ]);
-                    } catch (e) {
-                      return PermissionResponse(
-                          action: PermissionResponseAction.PROMPT,
-                          resources: [
-                            PermissionResourceType.CAMERA_AND_MICROPHONE,
-                          ]);
-                    }
-                  },
-                  initialUrlRequest: URLRequest(
-                    url: WebUri(
-                      "https://dev.d1gc80n5odr0sp.amplifyapp.com/39a5c5cc-eaa5-4577-9093-3c2acfa1807f",
-                    ),
-                  ),
-
-                  initialSettings: InAppWebViewSettings(
-                    mediaPlaybackRequiresUserGesture: false,
-                    allowsInlineMediaPlayback: true,
-                  ),
-
-                  onWebViewCreated: (InAppWebViewController controller) {
-                    _webViewController = controller;
-                    _webViewController.addJavaScriptHandler(
-                      handlerName: 'message',
-                      callback: (args) {
-                        try {
-                          // Ensure args is not empty and the first element is a String
-                          if (args.isNotEmpty && args[0] is String) {
-                            Map response = json.decode(args[0]);
-                            if (response.containsKey("event")) {
-                              switch (response["event"]) {
-                                case "closed":
-                                  onCancel({"status": "closed"});
-                                  break;
-                                case "error":
-                                  onError({
-                                    "status": "error",
-                                    "message": response['message'],
-                                  });
-                                  break;
-                                case "verified":
-                                  onVerified({
-                                    "status": "success",
-                                    "data": response,
-                                  });
-                                  break;
-                                default:
-                                  break;
-                              }
-                            }
-                          } else {
-                            // Handle cases where args[0] is not a String or args is empty
-                            print(
-                                "Received non-string data from JavaScript handler: ${args}");
-                            // Optionally, call onError or log a specific message for this case
-                          }
-                        } catch (e) {
-                          print("Error decoding JSON from WebView: $e");
-                          // Log the raw args[0] for debugging
-                          if (args.isNotEmpty) {
-                            print("Raw data from WebView: ${args[0]}");
-                          }
-                          onError({
-                            "status": "error",
-                            "message":
-                                "Failed to process message from WebView: $e",
-                          });
-                        }
-                      },
-                    );
-                  },
-                  onConsoleMessage: (
-                    InAppWebViewController controller,
-                    ConsoleMessage consoleMessage,
-                  ) {
-                    print("WEB CONSOLE: ${consoleMessage.message}");
-                    print(
-                        "WEB CONSOLE SOURCE ID: ${consoleMessage.messageLevel}");
-                  },
-                  onLoadStop: (controller, url) async {
-                    await controller.evaluateJavascript(
-                      source: """
-      window.addEventListener("message", (event) => {
-        window.flutter_inappwebview
-            .callHandler('message',event.data);
-      }, false);
-
-      // Add this for debugging camera access
-      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-        .then(function(stream) {
-          console.log('Camera and microphone access granted to web content!');
-          // You could even try to display the stream in a video element here for testing
-        })
-        .catch(function(err) {
-          console.error('Error accessing camera/microphone in web content: ' + err.name + ': ' + err.message);
-        });
-    """,
-                    );
-                  },
-                  androidOnPermissionRequest: (
-                    InAppWebViewController controller,
-                    String origin,
-                    List<String> resources,
-                  ) async {
-                    return PermissionRequestResponse(
-                      resources: resources,
-                      action: PermissionRequestResponseAction.GRANT,
-                    );
-                  },
-                  // onLoadStop: (controller, url) async {
-                  //   await controller.evaluateJavascript(
-                  //     source: """
-                  //       window.addEventListener("message", (event) => {
-                  //         window.flutter_inappwebview
-                  //             .callHandler('message',event.data);
-                  //       }, false);
-                  //     """,
-                  //   );
-                  // },
+                builder: (context) => WebViewWidget(
+                  controller: _webViewController,
                 ),
               );
             },
